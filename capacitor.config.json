@@ -1,0 +1,29 @@
+{
+  "appId": "com.navita.app",
+  "appName": "Navita",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "hostname": "localhost",
+    "cleartext": true,
+    "allowNavigation": [
+      "api.navitaserver.dpdns.org",
+      "*.navitaserver.dpdns.org"
+    ]
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
+    },
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  },
+  "android": {
+    "allowMixedContent": true,
+    "webContentsDebuggingEnabled": true,
+    "overrideUserAgent": "Mozilla/5.0 NavitaApp/1.0"
+  }
+  
+}
