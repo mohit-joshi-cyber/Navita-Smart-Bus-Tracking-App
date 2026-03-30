@@ -1,7 +1,20 @@
-// src/Profile.jsx
-import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Mail, Lock, LogIn, LogOut, User, Facebook, Chrome, Sun, Moon } from "lucide-react";
+// src/profile.jsx
+
+import { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react"
+import { motion, AnimatePresence } from "framer-motion"
+import { Capacitor } from "@capacitor/core"
+import { FirebaseAuthentication } from "@capacitor-firebase/authentication"
+
+import {
+  LogIn,
+  LogOut,
+  Facebook,
+  Sun,
+  Moon,
+  Eye,
+  EyeOff,
+  WifiOff
+} from "lucide-react"
 
 import {
   onAuthStateChanged,
@@ -11,486 +24,610 @@ import {
   GoogleAuthProvider,
   FacebookAuthProvider,
   signInWithPopup,
-} from "firebase/auth";
-import { auth } from "./firebase";
+  signInWithRedirect,
+  getRedirectResult,
+  signInWithCredential
+} from "firebase/auth"
 
-import { translations } from "./translations";
+import { auth } from "./firebase"
+import { translations } from "./translations"
 
+// ✅ Lazy load Lottie for performance
+const Lottie = lazy(() => import("lottie-react"))
+import busAnimation from "./assets/bus.json"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ Industrial error mapping — no raw Firebase messages exposed to users
+// ─────────────────────────────────────────────────────────────────────────────
+const parseError = (err) => {
+  const code = err.code || ""
+  if (code.includes("auth/invalid-email"))          return "Invalid email address."
+  if (code.includes("auth/user-not-found"))          return "No account found with this email."
+  if (code.includes("auth/wrong-password"))          return "Incorrect password. Please try again."
+  if (code.includes("auth/email-already-in-use"))    return "This email is already registered."
+  if (code.includes("auth/weak-password"))           return "Password must be at least 8 characters."
+  if (code.includes("auth/too-many-requests"))       return "Too many attempts. Please try again later."
+  if (code.includes("auth/network-request-failed"))  return "Network error. Check your connection."
+  if (code.includes("auth/popup-closed-by-user"))    return "Login cancelled."
+  return "Something went wrong. Please try again."
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ Strict input validation (sign-up requires strong password)
+// ─────────────────────────────────────────────────────────────────────────────
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+const validateInputs = (email, password, isSignUp) => {
+  if (!emailRegex.test(email)) return "Invalid email format."
+  if (isSignUp) {
+    if (
+      password.length < 8 ||
+      !/[A-Z]/.test(password) ||
+      !/[a-z]/.test(password) ||
+      !/\d/.test(password)
+    ) {
+      return "Password must be 8+ chars with uppercase, lowercase, and a number."
+    }
+  } else {
+    if (password.length < 6) return "Password must be at least 6 characters."
+  }
+  return null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ Retry strategy — for login and token refresh
+// ─────────────────────────────────────────────────────────────────────────────
+const retry = async (fn, retries = 2) => {
+  try {
+    return await fn()
+  } catch (e) {
+    if (retries <= 0) throw e
+    await new Promise((r) => setTimeout(r, 1000))
+    return retry(fn, retries - 1)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 export default function Profile({
   selectedLanguage,
   onLanguageChange,
   onLoginSuccess,
-  theme: propTheme,
-  onThemeChange,
+  theme,
+  onThemeChange
 }) {
-  const t = translations[selectedLanguage] || translations.en;
+  const t = translations[selectedLanguage] || translations.en
 
-  const [user, setUser] = useState(null);
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [user, setUser]                     = useState(null)
+  const [isSignUp, setIsSignUp]             = useState(false)
+  const [email, setEmail]                   = useState("")
+  const [password, setPassword]             = useState("")
+  const [error, setError]                   = useState("")
+  const [confirmLogout, setConfirmLogout]   = useState(false)
+  const [loading, setLoading]               = useState(true)
+  const [authLoading, setAuthLoading]       = useState(false)
+  const [showPassword, setShowPassword]     = useState(false)
+  const [role, setRole]                     = useState("user")
 
-  // Keep an internal theme so the component updates instantly when toggled,
-  // while still honoring the parent theme prop if provided.
-  const initialLocal = (() => {
-    if (typeof propTheme === "string") return propTheme;
-    try {
-      const stored = localStorage.getItem("theme");
-      if (stored) return stored;
-    } catch {}
-    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  })();
+  // ✅ Client-side rate limiting
+  const [attempts, setAttempts]         = useState(0)
+  const [blockedUntil, setBlockedUntil] = useState(null)
 
-  const [localTheme, setLocalTheme] = useState(initialLocal);
+  // ✅ Rapid-click debounce guard (ref avoids stale closures)
+  const lastClickRef = useRef(0)
 
-  // When parent prop changes, sync localTheme so UI stays consistent
+  const isDark = theme === "dark"
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Inactivity logout — 15 min
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (typeof propTheme === "string" && propTheme !== localTheme) {
-      setLocalTheme(propTheme);
+    let timeout
+    const resetTimer = () => {
+      clearTimeout(timeout)
+      timeout = setTimeout(async () => {
+        if (auth.currentUser) {
+          try { await signOut(auth) } catch (_) {}
+        }
+      }, 15 * 60 * 1000)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propTheme]);
+    window.addEventListener("mousemove", resetTimer)
+    window.addEventListener("keydown", resetTimer)
+    window.addEventListener("touchstart", resetTimer)
+    resetTimer()
+    return () => {
+      clearTimeout(timeout)
+      window.removeEventListener("mousemove", resetTimer)
+      window.removeEventListener("keydown", resetTimer)
+      window.removeEventListener("touchstart", resetTimer)
+    }
+  }, [])
 
-  // Effective theme used by this component
-  const effectiveTheme = typeof propTheme === "string" ? propTheme : localTheme;
-  const isDark = effectiveTheme === "dark";
-
-  // Ensure <html>.dark is synced for Tailwind dark: utilities and persist to localStorage.
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Handle OAuth redirect result on app load (replaces popup on web)
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    try {
-      if (isDark) {
-        document.documentElement.classList.add("dark");
-      } else {
-        document.documentElement.classList.remove("dark");
+    const handleRedirect = async () => {
+      try {
+        const result = await getRedirectResult(auth)
+        if (result?.user) {
+          // auth state observer will fire — no extra handling needed
+        }
+      } catch (err) {
+        setError(parseError(err))
       }
-      localStorage.setItem("theme", effectiveTheme);
-    } catch (e) {
-      // ignore storage errors
     }
-  }, [effectiveTheme, isDark]);
+    handleRedirect()
+  }, [])
 
-  // 🔹 Watch auth state
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Token refresh lifecycle — stores fresh token in sessionStorage
+  // ─────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const unsub = auth.onIdTokenChanged(async (user) => {
+      if (user) {
+        const token = await user.getIdToken(true)
+        sessionStorage.setItem("token", token)
+
+        // 🔐 Sync fresh token to backend
+        // await fetch("/api/auth/sync", {
+        //   method: "POST",
+        //   headers: { Authorization: `Bearer ${token}` }
+        // })
+
+        console.log("[Auth] Token refreshed")
+      }
+    })
+    return () => unsub()
+  }, [])
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Clean, predictable auth state observer
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u && onLoginSuccess) {
-        onLoginSuccess();
+      setUser(u)
+      setLoading(false)
+      if (u) {
+        // Fetch role from backend later: GET /me → setRole(data.role)
+        onLoginSuccess?.()
       }
-    });
-    return () => unsub();
-  }, [onLoginSuccess]);
+    })
+    return () => unsub()
+  }, [onLoginSuccess])
 
-  // 🔹 Email / password login or signup
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Memoized avatar
+  // ─────────────────────────────────────────────────────────────────────────
+  const avatar = useMemo(() => {
+    if (!user?.email) return null
+    return `https://api.dicebear.com/7.x/initials/svg?seed=${user.email}`
+  }, [user])
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Shared pre-auth guard — runs before every auth call
+  // ─────────────────────────────────────────────────────────────────────────
+  const preAuthCheck = () => {
+    // Rapid-click debounce
+    if (Date.now() - lastClickRef.current < 1000) return false
+    lastClickRef.current = Date.now()
+
+    // Network check
+    if (!navigator.onLine) {
+      setError("No internet connection.")
+      return false
+    }
+
+    // Bot / automation detection
+    if (navigator.webdriver) {
+      setError("Automated access is not allowed.")
+      return false
+    }
+
+    // Rate limiting
+    if (blockedUntil && Date.now() < blockedUntil) {
+      const secs = Math.ceil((blockedUntil - Date.now()) / 1000)
+      setError(`Too many attempts. Try again in ${secs}s.`)
+      return false
+    }
+
+    return true
+  }
+
+  const recordAttempt = () => {
+    const next = attempts + 1
+    setAttempts(next)
+    if (next > 5) {
+      setBlockedUntil(Date.now() + 30000) // 30 second block
+      setError("Too many failed attempts. Please wait 30 seconds.")
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Email / password auth with validation + randomized delay
+  // ─────────────────────────────────────────────────────────────────────────
   const handleEmailAuth = async (e) => {
-    e.preventDefault();
-    setError("");
-    try {
-      if (isSignUp) {
-        await createUserWithEmailAndPassword(auth, email, password);
-      } else {
-        await signInWithEmailAndPassword(auth, email, password);
-      }
-      setEmail("");
-      setPassword("");
-    } catch (err) {
-      setError(err.message || String(err));
-    }
-  };
+    e.preventDefault()
+    setError("")
 
-  // 🔹 Google login
+    if (!preAuthCheck()) return
+
+    const validationError = validateInputs(email, password, isSignUp)
+    if (validationError) return setError(validationError)
+
+    setAuthLoading(true)
+    try {
+      // ✅ Randomized delay — breaks timing-based brute force automation
+      await new Promise((r) => setTimeout(r, 800 + Math.random() * 700))
+
+      await retry(() =>
+        isSignUp
+          ? createUserWithEmailAndPassword(auth, email, password)
+          : signInWithEmailAndPassword(auth, email, password)
+      )
+      setEmail("")
+      setPassword("")
+      setAttempts(0)
+    } catch (err) {
+      recordAttempt()
+      setError(parseError(err))
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Google — redirect on web (secure), native on Capacitor
+  // ─────────────────────────────────────────────────────────────────────────
   const handleGoogle = async () => {
-    setError("");
+    if (!preAuthCheck()) return
+    setAuthLoading(true)
+    setError("")
     try {
-      await signInWithPopup(auth, new GoogleAuthProvider());
-    } catch (err) {
-      setError(err.message || String(err));
-    }
-  };
-
-  // 🔹 Facebook login
-  const handleFacebook = async () => {
-    setError("");
-    try {
-      await signInWithPopup(auth, new FacebookAuthProvider());
-    } catch (err) {
-      setError(err.message || String(err));
-    }
-  };
-
-  // 🔹 Sign out
-  const handleSignOut = async () => {
-    await signOut(auth);
-    setShowSignOutConfirm(false);
-  };
-
-  // 🔹 Toggle Theme
-  const toggleTheme = () => {
-    const current = effectiveTheme || "light";
-    const next = current === "light" ? "dark" : "light";
-
-    // Inform parent if available (preferred) so app root can react
-    if (typeof onThemeChange === "function") {
-      try {
-        onThemeChange(next);
-      } catch (e) {
-        // ignore parent errors
+      if (Capacitor.isNativePlatform()) {
+        const result = await FirebaseAuthentication.signInWithGoogle()
+        // ✅ Validate credential before use
+        if (!result?.credential?.idToken) {
+          throw new Error("Google login failed. Please try again.")
+        }
+        const credential = GoogleAuthProvider.credential(result.credential.idToken)
+        await signInWithCredential(auth, credential)
+      } else {
+        // ✅ Redirect-based OAuth — more secure than popup
+        await signInWithRedirect(auth, new GoogleAuthProvider())
+        // Result is handled by getRedirectResult() useEffect on next page load
       }
+    } catch (err) {
+      setError(parseError(err))
+      setAuthLoading(false)
     }
+    // Note: don't setAuthLoading(false) after redirect — page will reload
+  }
 
-    // Also update local theme immediately so the Profile UI flips without waiting
-    setLocalTheme(next);
-
-    // Keep <html> class in sync in case parent doesn't handle it for some reason
-    if (next === "dark") {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
-
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Facebook — redirect on web, popup on native
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleFacebook = async () => {
+    if (!preAuthCheck()) return
+    setAuthLoading(true)
+    setError("")
     try {
-      localStorage.setItem("theme", next);
-    } catch (e) {}
-  };
+      if (Capacitor.isNativePlatform()) {
+        await signInWithPopup(auth, new FacebookAuthProvider())
+        setAuthLoading(false)
+      } else {
+        await signInWithRedirect(auth, new FacebookAuthProvider())
+        // Page will reload — no need to setAuthLoading(false)
+      }
+    } catch (err) {
+      setError(parseError(err))
+      setAuthLoading(false)
+    }
+  }
 
-  // Styling helpers for immediate inline fallback (ensures correct colours even if Tailwind classes are missed)
-  const rootBg = isDark ? "#0f172a" : "#f8fafc";
-  const cardBg = isDark ? "#1e293b" : "#ffffff";
-  const textColor = isDark ? "#e2e8f0" : "#1e293b";
-  const inputBg = isDark ? "#334155" : "#f1f5f9";
-  const borderColor = isDark ? "#475569" : "#e2e8f0";
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ Hardened logout — clears session token only (not full localStorage)
+  // ─────────────────────────────────────────────────────────────────────────
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth)
+      sessionStorage.removeItem("token")
+      // Only clear app-specific keys — don't nuke unrelated storage
+      localStorage.removeItem("onboardingDone")
+      localStorage.removeItem("appLanguage")
+      localStorage.removeItem("theme")
+    } catch (err) {
+      console.error("[Auth] Sign out error:", err)
+    } finally {
+      setConfirmLogout(false)
+    }
+  }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Theme styles
+  // ─────────────────────────────────────────────────────────────────────────
+  const pageBg      = isDark ? "bg-slate-900" : "bg-slate-100"
+  const cardBg      = isDark ? "bg-slate-800 text-white" : "bg-white"
+  const borderColor = isDark ? "border-slate-600" : "border-slate-200"
+  const inputClass  = `p-3 border rounded-lg w-full outline-none transition ${
+    isDark
+      ? "bg-slate-700 border-slate-600 text-white placeholder-slate-400"
+      : "bg-white border-slate-200 text-slate-800"
+  }`
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Loading skeleton
+  // ─────────────────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className={`w-full min-h-screen flex items-center justify-center ${pageBg}`}>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className={`w-full max-w-md rounded-2xl shadow-xl p-6 ${cardBg}`}
+        >
+          <div className="flex flex-col items-center gap-5 animate-pulse">
+            <div className="w-20 h-20 rounded-full bg-slate-200 dark:bg-slate-700" />
+            <div className="h-5 w-32 bg-slate-200 dark:bg-slate-700 rounded" />
+            <div className="h-4 w-48 bg-slate-200 dark:bg-slate-700 rounded" />
+            <div className="h-10 w-full bg-slate-200 dark:bg-slate-700 rounded" />
+            <div className="h-10 w-full bg-slate-200 dark:bg-slate-700 rounded" />
+          </div>
+        </motion.div>
+      </div>
+    )
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div
-      className="w-full min-h-screen flex justify-center items-start pt-10 pb-20 overflow-y-auto bg-gradient-to-br transition-colors duration-300"
-      style={{ 
-        background: isDark 
-          ? "radial-gradient(ellipse at top, #0f172a, #020617)" 
-          : "radial-gradient(ellipse at top, #f0f9ff, #e0f2fe)" 
-      }}
-    >
+    // ✅ Safe-area padding for Android notch
+    <div className={`w-full min-h-screen flex items-center justify-center p-4 pt-safe pb-safe ${pageBg}`}>
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className="w-full max-w-md shadow-xl rounded-2xl p-8 flex flex-col gap-8 backdrop-blur-sm border mx-4"
-        style={{ 
-          background: cardBg,
-          borderColor: borderColor,
-          boxShadow: isDark 
-            ? "0 10px 40px -10px rgba(2, 6, 23, 0.5)" 
-            : "0 10px 40px -10px rgba(0, 0, 0, 0.1)"
-        }}
+        className={`w-full max-w-md rounded-2xl shadow-xl overflow-hidden ${cardBg}`}
       >
-        {/* Header with logo - Only shown for non-logged in state */}
+        {/* Animated Bus (Login screen only) */}
         {!user && (
-          <div className="flex flex-col items-center gap-2">
-            <motion.div 
-              className="p-3 rounded-full"
-              style={{ background: isDark ? "#2563eb20" : "#dbeafe" }}
-              whileHover={{ scale: 1.05 }}
-              transition={{ type: "spring", stiffness: 400, damping: 10 }}
-            >
-              <User className="h-8 w-8" style={{ color: isDark ? "#3b82f6" : "#2563eb" }} />
-            </motion.div>
-            <h1 className="text-2xl font-bold" style={{ color: textColor }}>
-              {isSignUp ? t.createAccount : t.signIn}
-            </h1>
+          <div className="w-full h-44 bg-blue-50 flex items-center justify-center">
+            <Suspense fallback={<div className="w-full h-40 bg-blue-50" />}>
+              <Lottie animationData={busAnimation} loop={true} className="h-40" />
+            </Suspense>
           </div>
         )}
 
-        <AnimatePresence mode="wait">
-          {user ? (
-            <motion.div
-              key="logged-in"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="flex flex-col gap-6"
-            >
-              <div className="flex flex-col items-center gap-3 text-center">
-                <div className="h-20 w-20 rounded-full flex items-center justify-center border-4" 
-                  style={{ 
-                    borderColor: isDark ? "#334155" : "#e2e8f0",
-                    background: isDark ? "#1e293b" : "#f8fafc"
-                  }}
-                >
-                  <User className="h-10 w-10" style={{ color: isDark ? "#3b82f6" : "#2563eb" }} />
-                </div>
-                <h2 className="text-xl font-semibold" style={{ color: textColor }}>
-                  {t.welcome || "Welcome"}, {user.displayName || user.email}
-                </h2>
-                <p className="text-sm opacity-75" style={{ color: textColor }}>
-                  {user.email}
-                </p>
-              </div>
+        <div className="p-6 flex flex-col gap-5">
 
-              <div className="space-y-6">
-                {/* Language Selector */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium" style={{ color: isDark ? "#cbd5e1" : "#64748b" }}>
-                    {t.appLanguage}
-                  </label>
+          {!user && (
+            <div className="text-center">
+              <h1 className="text-2xl font-bold text-slate-800 dark:text-white">
+                {isSignUp ? t.createAccount : t.signIn}
+              </h1>
+              <p className="text-sm text-slate-500 mt-1">Navita Smart Bus Tracking</p>
+            </div>
+          )}
+
+          {/* ✅ Offline banner */}
+          {!navigator.onLine && (
+            <div className="flex items-center gap-2 text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <WifiOff size={16} />
+              You are offline. Please check your connection.
+            </div>
+          )}
+
+          <AnimatePresence mode="wait">
+
+            {/* ── LOGGED IN VIEW ── */}
+            {user ? (
+              <motion.div
+                key="logged"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex flex-col gap-5"
+              >
+                <div className="flex flex-col items-center gap-3">
+                  <img
+                    src={avatar}
+                    alt="avatar"
+                    className={`w-20 h-20 rounded-full border-2 ${borderColor}`}
+                  />
+                  <h2 className="font-semibold text-lg">{t.welcome || "Welcome"}</h2>
+                  <p className={isDark ? "text-slate-300 text-sm" : "text-slate-500 text-sm"}>
+                    {user.email}
+                  </p>
+                  {/* Role badge — populate from /me backend endpoint */}
+                  <span className="text-xs px-3 py-1 rounded-full bg-blue-100 text-blue-700 font-medium capitalize">
+                    {role}
+                  </span>
+                </div>
+
+                {/* Language selector */}
+                <select
+                  className={`p-3 border rounded-lg ${borderColor} ${isDark ? "bg-slate-700 text-white" : ""}`}
+                  value={selectedLanguage}
+                  onChange={(e) => onLanguageChange(e.target.value)}
+                >
+                  <option value="en">English</option>
+                  <option value="hi">हिंदी</option>
+                  <option value="gu">ગુજરાતી</option>
+                  <option value="mr">मराठी</option>
+                  <option value="pa">ਪੰਜਾਬੀ</option>
+                  <option value="raj">राजस्थानी</option>
+                  <option value="ur">اُردُو</option>
+                </select>
+
+                {/* Theme switch */}
+                <button
+                  onClick={() => onThemeChange(isDark ? "light" : "dark")}
+                  className={`border py-3 rounded-lg flex items-center justify-center gap-2 transition ${borderColor} ${
+                    isDark ? "hover:bg-slate-700" : "hover:bg-slate-50"
+                  }`}
+                >
+                  {isDark ? <Sun size={18} /> : <Moon size={18} />}
+                  {isDark ? "Light Theme" : "Dark Theme"}
+                </button>
+
+                {/* Logout */}
+                <button
+                  onClick={() => setConfirmLogout(true)}
+                  className="bg-red-600 hover:bg-red-700 transition text-white py-3 rounded-lg flex items-center justify-center gap-2"
+                >
+                  <LogOut size={18} />
+                  {t.signOut || "Sign Out"}
+                </button>
+              </motion.div>
+
+            ) : (
+
+              /* ── LOGIN / SIGN UP FORM ── */
+              <motion.div
+                key="auth"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex flex-col gap-4"
+              >
+                <form onSubmit={handleEmailAuth} className="flex flex-col gap-4">
+
+                  <input
+                    type="email"
+                    placeholder="Email address"
+                    className={inputClass}
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    autoComplete="email"
+                    disabled={authLoading}
+                  />
+
+                  {/* ✅ Password field with visibility toggle */}
                   <div className="relative">
-                    <select
-                      className="w-full border rounded-xl p-3 pl-4 appearance-none focus:ring-2 focus:outline-none transition-all"
-                      value={selectedLanguage}
-                      onChange={(e) => onLanguageChange(e.target.value)}
-                      style={{
-                        background: inputBg,
-                        color: textColor,
-                        borderColor: borderColor,
-                      }}
-                    >
-                      <option value="en">English</option>
-                      <option value="hi">हिंदी</option>
-                      <option value="gu">ગુજરાતી</option>
-                      <option value="mr">मराठी</option>
-                      <option value="pa">ਪੰਜਾਬੀ</option>
-                      <option value="raj">राजस्थानी</option>
-                      <option value="ur">اُردُو</option>
-                    </select>
-                    <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
-                      <svg className="h-5 w-5" style={{ color: textColor }} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Theme Toggle */}
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium" style={{ color: isDark ? "#cbd5e1" : "#64748b" }}>
-                    App Theme
-                  </label>
-                  <motion.button
-                    onClick={toggleTheme}
-                    className="w-full flex items-center justify-between p-3 rounded-xl border transition-all"
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    style={{
-                      background: isDark ? "#334155" : "#f1f5f9",
-                      borderColor: borderColor,
-                      color: textColor,
-                    }}
-                  >
-                    <span className="flex items-center">
-                      {isDark ? (
-                        <>
-                          <Moon className="h-5 w-5 mr-2" /> Dark Mode
-                        </>
-                      ) : (
-                        <>
-                          <Sun className="h-5 w-5 mr-2" /> Light Mode
-                        </>
-                      )}
-                    </span>
-                    <div className={`h-6 w-11 rounded-full relative p-1 flex items-center ${isDark ? 'bg-blue-600 justify-end' : 'bg-gray-300 justify-start'}`}>
-                      <div className="h-4 w-4 rounded-full bg-white"></div>
-                    </div>
-                  </motion.button>
-                </div>
-
-                {/* Profile actions */}
-                <div className="grid grid-cols-2 gap-3">
-                  <motion.button
-                    className="py-2.5 px-4 rounded-xl transition-all border text-sm font-medium"
-                    whileHover={{ y: -2 }}
-                    style={{
-                      borderColor: borderColor,
-                      background: isDark ? "#334155" : "#f8fafc",
-                      color: textColor,
-                    }}
-                  >
-                    {t.viewProfile}
-                  </motion.button>
-                  <motion.button
-                    className="py-2.5 px-4 rounded-xl transition-all border text-sm font-medium"
-                    whileHover={{ y: -2 }}
-                    style={{
-                      borderColor: borderColor,
-                      background: isDark ? "#334155" : "#f8fafc",
-                      color: textColor,
-                    }}
-                  >
-                    {t.updatePassword}
-                  </motion.button>
-                </div>
-              </div>
-
-              {/* Sign out */}
-              <div className="mt-4">
-                <motion.button
-                  onClick={() => setShowSignOutConfirm(true)}
-                  className="w-full flex items-center justify-center rounded-xl py-3 transition-all font-medium gap-2"
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  style={{ background: "#ef4444", color: "#fff" }}
-                >
-                  <LogOut className="h-5 w-5" /> {t.signOut || "Sign Out"}
-                </motion.button>
-
-                <AnimatePresence>
-                  {showSignOutConfirm && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="mt-4 p-4 rounded-xl text-center space-y-3 overflow-hidden"
-                      style={{
-                        background: isDark ? "#7f1d1d20" : "#fef2f2",
-                        border: `1px solid ${isDark ? "#7f1d1d40" : "#fecaca"}`,
-                        color: isDark ? "#fecaca" : "#dc2626",
-                      }}
-                    >
-                      <p className="font-medium">{t.logoutConfirm}</p>
-                      <div className="flex justify-center gap-3">
-                        <motion.button
-                          onClick={handleSignOut}
-                          className="px-4 py-1.5 rounded-lg text-sm font-medium"
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                          style={{ background: "#dc2626", color: "#fff" }}
-                        >
-                          {t.yes}
-                        </motion.button>
-                        <motion.button
-                          onClick={() => setShowSignOutConfirm(false)}
-                          className="px-4 py-1.5 rounded-lg text-sm font-medium border"
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                          style={{
-                            background: isDark ? "#334155" : "#f8fafc",
-                            borderColor: borderColor,
-                            color: textColor,
-                          }}
-                        >
-                          {t.cancel}
-                        </motion.button>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          ) : (
-            <motion.div
-              key="auth-form"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="flex flex-col gap-6"
-            >
-              <form onSubmit={handleEmailAuth} className="flex flex-col gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center rounded-xl px-4 py-3 border transition-all focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent" 
-                    style={{ 
-                      background: inputBg, 
-                      borderColor: borderColor,
-                    }}
-                  >
-                    <Mail className="h-5 w-5 mr-3" style={{ color: isDark ? "#94a3b8" : "#64748b" }} />
                     <input
-                      type="email"
-                      placeholder="Email"
-                      className="flex-1 bg-transparent outline-none placeholder-opacity-70"
-                      style={{ color: textColor }}
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex items-center rounded-xl px-4 py-3 border transition-all focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent" 
-                    style={{ 
-                      background: inputBg, 
-                      borderColor: borderColor,
-                    }}
-                  >
-                    <Lock className="h-5 w-5 mr-3" style={{ color: isDark ? "#94a3b8" : "#64748b" }} />
-                    <input
-                      type="password"
-                      placeholder="Password"
-                      className="flex-1 bg-transparent outline-none placeholder-opacity-70"
-                      style={{ color: textColor }}
+                      type={showPassword ? "text" : "password"}
+                      placeholder={isSignUp ? "Password (8+ chars, A-Z, a-z, 0-9)" : "Password"}
+                      className={`${inputClass} pr-10`}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
+                      autoComplete={isSignUp ? "new-password" : "current-password"}
+                      disabled={authLoading}
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
                   </div>
-                </div>
 
-                {error && (
-                  <motion.p 
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-sm p-3 rounded-lg text-center"
-                    style={{ background: isDark ? "#7f1d1d30" : "#fef2f2", color: "#ef4444" }}
+                  {/* Error display */}
+                  {error && (
+                    <p className="text-red-500 text-sm text-center">{error}</p>
+                  )}
+
+                  {/* ✅ Rate-limit notice */}
+                  {blockedUntil && Date.now() < blockedUntil && (
+                    <p className="text-amber-500 text-xs text-center">
+                      Account temporarily locked. Please wait before retrying.
+                    </p>
+                  )}
+
+                  {/* ✅ Disabled during auth to prevent double-submit */}
+                  <button
+                    type="submit"
+                    disabled={authLoading || (blockedUntil && Date.now() < blockedUntil)}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition text-white py-3 rounded-lg flex items-center justify-center gap-2"
                   >
-                    {error}
-                  </motion.p>
-                )}
+                    <LogIn size={18} />
+                    {authLoading ? "Please wait..." : (isSignUp ? t.signUp : t.signIn)}
+                  </button>
+                </form>
 
-                <motion.button
-                  type="submit"
-                  className="w-full flex items-center justify-center rounded-xl py-3.5 transition-all font-medium gap-2"
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  style={{ background: "#3b82f6", color: "#fff" }}
-                >
-                  <LogIn className="h-5 w-5" />
-                  {isSignUp ? t.signUp : t.signIn}
-                </motion.button>
-              </form>
-
-              <div className="relative flex items-center py-2">
-                <div className="flex-grow border-t" style={{ borderColor: borderColor }}></div>
-                <span className="flex-shrink mx-4 text-sm" style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
-                  Or continue with
-                </span>
-                <div className="flex-grow border-t" style={{ borderColor: borderColor }}></div>
-              </div>
-
-              <div className="flex gap-3">
-                <motion.button
+                {/* ✅ Google — redirect on web, native on Android */}
+                <button
                   onClick={handleGoogle}
-                  className="flex-1 flex items-center justify-center rounded-xl py-3 transition-all border font-medium gap-2"
-                  whileHover={{ y: -2 }}
-                  style={{
-                    background: isDark ? "#334155" : "#f8fafc",
-                    borderColor: borderColor,
-                    color: textColor,
-                  }}
+                  disabled={authLoading}
+                  className={`border py-3 rounded-lg flex items-center justify-center gap-3 transition disabled:opacity-60 disabled:cursor-not-allowed ${borderColor} ${
+                    isDark ? "hover:bg-slate-700" : "hover:bg-gray-50"
+                  }`}
                 >
-                  <Chrome className="h-5 w-5" /> Google
-                </motion.button>
-                <motion.button
-                  onClick={handleFacebook}
-                  className="flex-1 flex items-center justify-center rounded-xl py-3 transition-all font-medium gap-2"
-                  whileHover={{ y: -2 }}
-                  style={{ background: "#1877F2", color: "#fff" }}
-                >
-                  <Facebook className="h-5 w-5" /> Facebook
-                </motion.button>
-              </div>
-
-              <p className="text-center mt-2 text-sm" style={{ color: isDark ? "#94a3b8" : "#64748b" }}>
-                {isSignUp ? t.alreadyHaveAccount : t.dontHaveAccount}{" "}
-                <button 
-                  onClick={() => setIsSignUp(!isSignUp)} 
-                  className="font-semibold underline underline-offset-2 transition-colors"
-                  style={{ color: isDark ? "#3b82f6" : "#2563eb" }}
-                >
-                  {isSignUp ? t.signIn : t.signUp}
+                  <img
+                    src="https://upload.wikimedia.org/wikipedia/commons/c/c1/Google_%22G%22_logo.svg"
+                    className="w-5 h-5"
+                    alt="Google"
+                  />
+                  {authLoading ? "Please wait..." : "Continue with Google"}
                 </button>
-              </p>
-            </motion.div>
-          )}
-        </AnimatePresence>
+
+                {/* Facebook */}
+                <button
+                  onClick={handleFacebook}
+                  disabled={authLoading}
+                  className="bg-[#1877F2] hover:bg-[#1565d8] disabled:opacity-60 disabled:cursor-not-allowed transition text-white py-3 rounded-lg flex items-center justify-center gap-2"
+                >
+                  <Facebook size={18} />
+                  {authLoading ? "Please wait..." : "Continue with Facebook"}
+                </button>
+
+                <p className="text-center text-sm text-slate-500">
+                  {isSignUp ? t.alreadyHaveAccount : t.dontHaveAccount}
+                  <button
+                    onClick={() => { setIsSignUp(!isSignUp); setError("") }}
+                    className="ml-2 text-blue-600 font-semibold hover:underline"
+                  >
+                    {isSignUp ? t.signIn : t.signUp}
+                  </button>
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </motion.div>
+
+      {/* ── LOGOUT CONFIRMATION MODAL ── */}
+      <AnimatePresence>
+        {confirmLogout && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className={`rounded-xl p-6 w-80 text-center shadow-xl ${
+                isDark ? "bg-slate-800 text-white" : "bg-white"
+              }`}
+            >
+              <h2 className="text-lg font-semibold mb-2">Confirm Logout</h2>
+              <p className={`text-sm mb-5 ${isDark ? "text-slate-300" : "text-slate-500"}`}>
+                Are you sure you want to sign out?
+              </p>
+              <div className="flex gap-3 justify-center">
+                <button
+                  onClick={() => setConfirmLogout(false)}
+                  className={`px-4 py-2 border rounded-lg transition ${borderColor} ${
+                    isDark ? "hover:bg-slate-700" : "hover:bg-slate-50"
+                  }`}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSignOut}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 transition text-white rounded-lg"
+                >
+                  Logout
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
-  );
+  )
 }
+

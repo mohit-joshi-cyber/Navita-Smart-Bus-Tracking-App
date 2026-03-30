@@ -1,186 +1,182 @@
 // Features.jsx
 import { motion, AnimatePresence } from "framer-motion";
+import { useState } from "react";
 import Profile from "./profile";
 import Terms from "./Terms";
-import { useState } from "react";
-// ✅ Import images like modules
 import FImage from "./f.png";
 import SImage from "./s.png";
-import { ChevronRight, ChevronLeft, MapPin, Clock } from "lucide-react";
+import { MapPin, Clock, Bus } from "lucide-react";
+
+const transition = {
+  type: "spring",
+  stiffness: 140,
+  damping: 20
+};
 
 export default function Features({ language, setLanguage, onFinish }) {
-  const [featureStep, setFeatureStep] = useState(0);
+
+  const [step, setStep] = useState(0);
 
   const features = [
     {
       title: "Welcome to Navita",
-      subtitle: "Your smart bus tracking companion",
-      description: "Experience the future of public transportation with real-time tracking and intelligent route planning.",
+      subtitle: "Smart bus tracking",
+      desc: "Track buses in real time with smooth navigation.",
       image: FImage,
-      icon: <MapPin className="h-8 w-8" />,
-      color: "bg-blue-500"
+      icon: MapPin
     },
     {
-      title: "Real-Time Bus Tracking",
-      subtitle: "Never miss your bus again",
-      description: "Track buses live on the map with accurate arrival times and driver details for a stress-free commute.",
+      title: "Live Bus Tracking",
+      subtitle: "Never miss your ride",
+      desc: "Watch buses move live and get accurate arrival updates.",
       image: SImage,
-      icon: <Clock className="h-8 w-8" />,
-      color: "bg-green-500"
+      icon: Clock
+    },
+    {
+      title: "Smart Travel",
+      subtitle: "All bus info in one place",
+      desc: "View routes, driver info and updates instantly.",
+      image: FImage,
+      icon: Bus
     }
   ];
 
-  const nextStep = () => {
-    if (featureStep < features.length) {
-      setFeatureStep(featureStep + 1);
-    }
+  const next = () => {
+    if (step < features.length) setStep(step + 1);
   };
 
-  const prevStep = () => {
-    if (featureStep > 0) {
-      setFeatureStep(featureStep - 1);
-    }
+  const prev = () => {
+    if (step > 0) setStep(step - 1);
+  };
+
+  const handleSwipe = (event, info) => {
+    if (info.offset.x < -80) next();
+    if (info.offset.x > 80) prev();
   };
 
   return (
-    <div className="relative flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden">
-      {/* Background decorative elements */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -right-40 w-80 h-80 bg-blue-200 rounded-full blur-3xl opacity-50"></div>
-        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-purple-200 rounded-full blur-3xl opacity-50"></div>
-      </div>
+    <div className="min-h-screen bg-white flex flex-col overflow-hidden">
 
-      {/* Progress indicator */}
-      <div className="absolute top-6 left-1/2 transform -translate-x-1/2 flex space-x-2 z-20">
-        {features.map((_, index) => (
-          <div
-            key={index}
-            className={`h-2 w-2 rounded-full transition-all duration-300 ${
-              index === featureStep ? "bg-blue-600 w-6" : "bg-gray-300"
-            }`}
-          ></div>
+      {/* progress bar */}
+      <div className="flex gap-1 px-4 pt-4">
+        {features.map((_, i) => (
+          <div key={i} className="flex-1 h-1 bg-gray-200 rounded">
+            <motion.div
+              className="h-full bg-blue-600 rounded"
+              initial={{ width: 0 }}
+              animate={{ width: step >= i ? "100%" : "0%" }}
+              transition={{ duration: 0.4 }}
+            />
+          </div>
         ))}
       </div>
 
       <AnimatePresence mode="wait">
-        {/* Feature screens */}
-        {featureStep < features.length && (
+
+        {/* slides */}
+        {step < features.length && (
           <motion.div
-            key={featureStep}
-            initial={{ opacity: 0, x: 30 }}
+            key={step}
+            drag="x"
+            dragConstraints={{ left: 0, right: 0 }}
+            onDragEnd={handleSwipe}
+            initial={{ opacity: 0, x: 60 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -30 }}
-            transition={{ duration: 0.5 }}
-            className="relative w-full max-w-4xl h-[80vh] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row mx-4"
+            exit={{ opacity: 0, x: -60 }}
+            transition={transition}
+            className="flex flex-col items-center justify-center flex-1 px-6 text-center"
           >
-            {/* Image section */}
-            <div className="relative w-full md:w-1/2 h-1/2 md:h-full">
-              <img
-                src={features[featureStep].image}
-                alt={features[featureStep].title}
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-white/80 to-transparent md:bg-gradient-to-r md:from-white/80 md:to-transparent"></div>
-              
-              {/* Feature icon badge */}
-              <div className={`absolute top-6 left-6 p-3 rounded-xl text-white ${features[featureStep].color}`}>
-                {features[featureStep].icon}
-              </div>
+
+            <motion.img
+              src={features[step].image}
+              alt=""
+              className="w-72 max-w-full mb-10 select-none"
+              initial={{ scale: 0.9, y: 40, opacity: 0 }}
+              animate={{ scale: 1, y: 0, opacity: 1 }}
+              transition={{ duration: 0.5 }}
+              draggable={false}
+            />
+
+            <div className="bg-blue-100 p-3 rounded-xl mb-4">
+              {(() => {
+                const Icon = features[step].icon;
+                return <Icon className="h-6 w-6 text-blue-600" />;
+              })()}
             </div>
 
-            {/* Content section */}
-            <div className="relative w-full md:w-1/2 h-1/2 md:h-full flex flex-col justify-center p-8 md:p-12">
-              <div className="mb-6">
-                <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-2">
-                  {features[featureStep].title}
-                </h1>
-                <p className="text-lg text-blue-600 font-medium mb-4">
-                  {features[featureStep].subtitle}
-                </p>
-                <p className="text-gray-600 mb-6">
-                  {features[featureStep].description}
-                </p>
-              </div>
+            <h1 className="text-2xl font-semibold text-gray-900">
+              {features[step].title}
+            </h1>
 
-              {/* Navigation buttons */}
-              <div className="flex justify-between mt-8">
-                <button
-                  onClick={prevStep}
-                  disabled={featureStep === 0}
-                  className={`flex items-center px-4 py-2 rounded-lg transition-all ${
-                    featureStep === 0 
-                      ? "text-gray-400 cursor-not-allowed" 
-                      : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"
-                  }`}
-                >
-                  <ChevronLeft className="h-5 w-5 mr-1" />
-                  Back
-                </button>
-                
-                <button
-                  onClick={nextStep}
-                  className="flex items-center bg-blue-600 text-white px-6 py-3 rounded-xl shadow-lg hover:bg-blue-700 transition-all font-medium"
-                >
-                  {featureStep === features.length - 1 ? "Get Started" : "Next"}
-                  <ChevronRight className="h-5 w-5 ml-1" />
-                </button>
-              </div>
-            </div>
+            <p className="text-blue-600 text-sm mt-1">
+              {features[step].subtitle}
+            </p>
+
+            <p className="text-gray-500 mt-3 max-w-sm">
+              {features[step].desc}
+            </p>
+
           </motion.div>
         )}
 
-        {/* Login Step */}
-        {featureStep === features.length && (
+        {/* login */}
+        {step === features.length && (
           <motion.div
             key="login"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            transition={{ duration: 0.5 }}
-            className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden"
+            initial={{ opacity: 0, y: 60 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={transition}
+            className="flex flex-col justify-center flex-1 px-6"
           >
+
             <Profile
               selectedLanguage={language}
-              onLanguageChange={(lang) => setLanguage(lang)}
+              onLanguageChange={(l) => setLanguage(l)}
               onLoginSuccess={onFinish}
             />
-            
-            <div className="px-6 pb-6">
-              <p className="text-xs text-gray-500 text-center">
-                By continuing, you agree to our{" "}
-                <span
-                  className="text-blue-500 underline cursor-pointer hover:text-blue-700"
-                  onClick={() => setFeatureStep("terms")}
-                >
-                  Terms & Conditions
-                </span>
-              </p>
-              
-              <button
-                onClick={() => setFeatureStep(features.length - 1)}
-                className="flex items-center justify-center mt-4 text-gray-500 hover:text-gray-700 text-sm"
+
+            <p className="text-xs text-gray-500 text-center mt-4">
+              By continuing you agree to our{" "}
+              <span
+                className="text-blue-600 underline cursor-pointer"
+                onClick={() => setStep("terms")}
               >
-                <ChevronLeft className="h-4 w-4 mr-1" />
-                Back to features
-              </button>
-            </div>
+                Terms & Conditions
+              </span>
+            </p>
+
           </motion.div>
         )}
 
-        {/* Terms Page */}
-        {featureStep === "terms" && (
+        {/* terms */}
+        {step === "terms" && (
           <motion.div
             key="terms"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            transition={{ duration: 0.5 }}
-            className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex flex-col flex-1"
           >
-            <Terms onBack={() => setFeatureStep(features.length)} />
+            <Terms onBack={() => setStep(features.length)} />
           </motion.div>
         )}
+
       </AnimatePresence>
+
+      {/* bottom button */}
+      {typeof step === "number" && step < features.length && (
+        <div className="flex justify-center pb-10">
+
+          <motion.button
+            whileTap={{ scale: 0.95 }}
+            onClick={next}
+            className="bg-blue-600 text-white px-8 py-3 rounded-xl shadow-md font-medium"
+          >
+            {step === features.length - 1 ? "Continue" : "Next"}
+          </motion.button>
+
+        </div>
+      )}
+
     </div>
   );
 }

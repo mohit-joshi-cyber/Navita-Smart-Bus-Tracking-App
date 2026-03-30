@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "841720523317-angl07pk2lu6682a8c664jfs49lete33.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.navita.app",
+            "certificate_hash": "1b15512579a91b0b3b2d1c60fa053fff813a2b31"
+          }
+        },
+        {
           "client_id": "841720523317-alr3l7h31eulhst0fc3m399bcomvlf8g.apps.googleusercontent.com",
           "client_type": 3
         }
