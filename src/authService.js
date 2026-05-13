@@ -42,11 +42,7 @@ export function loginWithGoogle() {
   return signInWithPopup(auth, provider);
 }
 
-// Facebook
-export function loginWithFacebook() {
-  const provider = new FacebookAuthProvider();
-  return signInWithPopup(auth, provider);
-}
+
 
 // Logout
 export function logout() {

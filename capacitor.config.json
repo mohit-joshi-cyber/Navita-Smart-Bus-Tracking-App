@@ -6,7 +6,7 @@
   "server": {
     "androidScheme": "https",
     "hostname": "localhost",
-    "cleartext": true,
+    "cleartext": false,
     "allowNavigation": [
       "api.navitaserver.dpdns.org",
       "*.navitaserver.dpdns.org"
@@ -18,12 +18,15 @@
     },
     "CapacitorHttp": {
       "enabled": true
+    },
+    "FirebaseAuthentication": {
+      "skipNativeAuth": false,
+      "providers": ["google.com"]
     }
   },
   "android": {
-    "allowMixedContent": true,
-    "webContentsDebuggingEnabled": true,
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false,
     "overrideUserAgent": "Mozilla/5.0 NavitaApp/1.0"
   }
-  
 }

@@ -9,7 +9,7 @@ const firebaseConfig = {
   authDomain: "navita-log.firebaseapp.com",
   projectId: "navita-log",
   storageBucket: "navita-log.firebasestorage.app",
-  messagingSenderId: "841720523317",
+ 
   appId: "1:841720523317:web:eb59ad453b40b28cb19f7c",
   measurementId: "G-MQW93XNGED"
 };
