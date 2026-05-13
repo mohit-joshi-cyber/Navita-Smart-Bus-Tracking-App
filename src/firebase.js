@@ -5,13 +5,13 @@ import { getAuth } from "firebase/auth"; // <-- ADD THIS
 
 // Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyAagfZMlddjvvE_oV2rNU5p1tVzqUNuP_A",
-  authDomain: "navita-log.firebaseapp.com",
-  projectId: "navita-log",
-  storageBucket: "navita-log.firebasestorage.app",
+  apiKey: "your credentials ",
+  authDomain: "your credentials",
+  projectId: "your credentials",
+  storageBucket: "your credentials",
  
-  appId: "1:841720523317:web:eb59ad453b40b28cb19f7c",
-  measurementId: "G-MQW93XNGED"
+  appId: "your credentials",
+  measurementId: "your credentials"
 };
 
 // Initialize Firebase
